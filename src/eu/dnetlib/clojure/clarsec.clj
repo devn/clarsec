@@ -31,14 +31,14 @@
 
 (defmethod bind 'Parser
   [dm dfunc]
-  (let [m (force dm)
-        func (force dfunc)]
+  (let [m dm
+        func dfunc]
     (make-monad (monad-type m)
                 (fn [strn]
                   (let [parser (monad m)
                         result (parser strn)]
                     (if (consumed? result)
-                      ((force (monad (force (func (:value result))))) (:rest result))
+                      ((monad (func (:value result))) (:rest result))
                       result))))))
 
 (defn result [v]
@@ -48,7 +48,7 @@
   (make-monad 'Parser
               (fn opt-plus [strn]
                 (failback
-                 (first (drop-while failed? (map #((monad (force %)) strn) parsers)))
+                 (first (drop-while failed? (map #((monad %) strn) parsers)))
                  (failed)))))
 
 (defn >> [p1 p2]
@@ -62,6 +62,9 @@
 (defn <$> [f p]
   (bind p #(result (f %))))
 
+;; Applicative Programming
+(defn <* [a b] (let-bind [r a _ b] (result r)))
+
 
 (def any-token
      (make-monad 'Parser
@@ -70,13 +73,6 @@
                      (failed)
                      (consumed (first strn)
                                (. strn (substring 1)))))))
-
-(def eof
-     (make-monad 'Parser
-                 (fn p-eof [strn]
-                   (if (= "" strn)
-                     (consumed "" "")
-                     (failed)))))
 
 (def fail (make-monad 'Parser (fn p-fail [strn] (failed))))
 
@@ -104,7 +100,7 @@
 (def many1)
 
 (defn many [parser]
-  (>>== (optional (delay (many1 parser)))
+  (>>== (optional (many1 parser))
         #(if (nil? %) () %)))
 
 (defn many1 [parser]
@@ -145,6 +141,11 @@
 (defn one-of [target-strn]
   (let [str-chars (into #{} target-strn)]
     (satisfy #(contains? str-chars %))))
+
+(defn none-of [exclusion-strn]
+  (let [str-chars (into #{} exclusion-strn)]
+    (satisfy #(not (contains? str-chars %)))))
+  
 
 (def space (one-of " \r\n\t"))
 
@@ -194,8 +195,39 @@
 (def stringLiteral
      (stringify (lexeme (between (is-char \") (is-char \") (many (not-char \"))))))
 
-(defn parse [parser input]
-  ((monad (force parser)) input))
+(def eof
+     (make-monad 'Parser
+                 (fn p-eof [strn]
+                   (if (= "" strn)
+                     (consumed "" "")
+                     (failed)))))
 
-;;(defn -main []
-;;  (println (parse (>> (delay letter) (delay letter)) "ca.")))
+(def eol
+     (>> (optional (satisfy #(= % \return)))
+         (satisfy #(= % \newline))))
+
+
+(defn force-during-parse [d]
+  (make-monad 'Parser
+              (fn [strn]
+                ((monad (force d)) strn))))
+
+(defmacro lazy [sexp]
+  (let [lazy-p-fn-fn
+        (fn [p-fn-fn & args]
+          `(force-during-parse
+            (delay (@(force (delay (var ~p-fn-fn))) ~@args))))
+        lazy-p-fn
+        (fn [p-fn]
+          `(force-during-parse
+            (delay @(force (delay (var ~p-fn))))))]
+    (cond
+     (seq? sexp) (apply lazy-p-fn-fn sexp)
+     (symbol? sexp) (lazy-p-fn sexp)
+     :else (throw (Exception. (str "Unsupported use of lazy. "
+                                   "Proper use: (lazy identifier) or "
+                                   "(lazy (symb \"foo\"))"))))))
+
+(defn parse [parser input]
+  ((monad parser) input))
+
